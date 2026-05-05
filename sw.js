@@ -1,4 +1,4 @@
-const CACHE = 'hakoiri-v1';
+const CACHE = 'hakoiri-v2';
 const ASSETS = [
   './',
   './index.html',
