@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>箱入り娘</title>
+<meta name="theme-color" content="#8a6840">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="箱娘">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@400;700;900&family=Yuji+Syuku&display=swap" rel="stylesheet">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#7a5a28; }
+@keyframes fadeIn { from{opacity:0;transform:scale(0.95)} to{opacity:1;transform:scale(1)} }
+@keyframes pulse  { 0%,100%{filter:drop-shadow(0 0 4px rgba(240,200,80,0.3))} 50%{filter:drop-shadow(0 0 12px rgba(240,200,80,0.9))} }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+// ── 定数 ────────────────────────────────────────────────
+const COLS=4, FULL_ROWS=5, CELL=72, HALF=36, DEPTH=6;
+
+// ── Canvas木目生成 ──────────────────────────────────────
+const WOOD_DEFS = {
+  hinoki:  { r:245, g:225, b:168, dr:210, dg:185, db:128 }, // 娘・母・箱入り娘：標準白木
+  hinoki2: { r:238, g:215, b:148, dr:200, dg:172, db:105 }, // 丁稚：やや黄みがかった白木
+  hinoki3: { r:242, g:208, b:158, dr:205, dg:168, db:115 }, // 手代：やや赤みがかった白木
+  buna:    { r:175, g:108, b: 55, dr:140, dg: 78, db: 28 }, // 父：赤茶ブナ
+  walnut:  { r:108, g: 62, b: 25, dr: 72, dg: 38, db: 12 }, // 女中：ウォールナット
+  keyaki:  { r:198, g:188, b:138, dr:162, dg:148, db: 98 }, // 番頭：ケヤキ
+  frame:   { r:232, g:212, b:158, dr:198, dg:175, db:115 }, // 枠
+};
+
+function seededRand(seed) {
+  let s = seed >>> 0;
+  return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 0xFFFFFFFF; };
+}
+
+function drawWood(canvas, type, w, h, sid) {
+  if (!canvas || w <= 0 || h <= 0) return;
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  const d = WOOD_DEFS[type] || WOOD_DEFS.hinoki;
+  const rnd = seededRand(sid);
+
+  // ベース塗り
+  ctx.fillStyle = `rgb(${d.r},${d.g},${d.b})`;
+  ctx.fillRect(0, 0, w, h);
+
+  // 木目ライン（縦方向の繊維）
+  const lines = Math.floor(w / 4) + 6;
+  for (let i = 0; i < lines; i++) {
+    const x0 = (i / lines) * w * 1.3 - w * 0.15;
+    const alpha = 0.04 + rnd() * 0.09;
+    const mix = rnd();
+    const cr = d.r + (d.dr - d.r) * mix | 0;
+    const cg = d.g + (d.dg - d.g) * mix | 0;
+    const cb = d.b + (d.db - d.b) * mix | 0;
+    ctx.strokeStyle = `rgba(${cr},${cg},${cb},${alpha})`;
+    ctx.lineWidth = 0.6 + rnd() * 1.8;
+    ctx.beginPath();
+    ctx.moveTo(x0, 0);
+    let cx = x0;
+    for (let seg = 1; seg <= 6; seg++) {
+      const nx = cx + (rnd() - 0.5) * 7;
+      const ny = (seg / 6) * h;
+      ctx.lineTo(nx, ny);
+      cx = nx;
+    }
+    ctx.stroke();
+  }
+
+  // 年輪（薄い楕円）
+  const rings = 3 + Math.floor(rnd() * 3);
+  const rx0 = w * (0.2 + rnd() * 0.9);
+  const ry0 = h * (0.2 + rnd() * 0.7);
+  for (let r = 0; r < rings; r++) {
+    ctx.strokeStyle = `rgba(${d.dr},${d.dg},${d.db},${0.06 + rnd() * 0.07})`;
+    ctx.lineWidth = 0.7 + rnd() * 1.0;
+    ctx.beginPath();
+    ctx.ellipse(rx0, ry0, w * (0.3 + r * 0.3), h * (0.1 + r * 0.15), 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // ハイライト
+  const gr = ctx.createLinearGradient(0, 0, 0, h);
+  gr.addColorStop(0,   'rgba(255,255,255,0.16)');
+  gr.addColorStop(0.5, 'rgba(255,255,255,0)');
+  gr.addColorStop(1,   'rgba(0,0,0,0.06)');
+  ctx.fillStyle = gr;
+  ctx.fillRect(0, 0, w, h);
+}
+
+function WoodSurface({ type, w, h, sid, radius=0, style={} }) {
+  const ref = useRef(null);
+  useEffect(() => { drawWood(ref.current, type, w, h, sid); }, [type, w, h, sid]);
+  return <canvas ref={ref} width={w} height={h}
+    style={{ position:'absolute', inset:0, width:'100%', height:'100%',
+             borderRadius:radius, display:'block', pointerEvents:'none', ...style }}/>;
+}
+
+// ── 駒データ ─────────────────────────────────────────────
+// 初期配置（画像通り・空きゼロ・全20マス埋まる）:
+// row0: [父(1×2)][娘(2×2)][母(1×2)]
+// row1: [父     ][娘      ][母      ]
+// row2: [箱入り娘(2×1)][番頭(2×1)]
+// row3: [女中(1×2)][丁稚][丁稚][女中(1×2)]
+// row4: [女中下][手代][丁稚][女中下]  ← 半マス行
+//
+// 検証（全20マス）:
+// row0: 父(0,0) 娘(1,0) 娘(2,0) 母(3,0)
+// row1: 父(0,1) 娘(1,1) 娘(2,1) 母(3,1)
+// row2: 箱娘(0,2) 箱娘(1,2) 番頭(2,2) 番頭(3,2)
+// row3: 女中(0,3) 丁稚(1,3) 丁稚(2,3) 女中(3,3)
+// row4: 女中(0,4) 手代(1,4) 丁稚(2,4) 女中(3,4)
+// ✓ 全20マス埋まる、箱入り娘消えると(0,2)(1,2)が空き=2マス ✓
+
+const START_PIECES = [
+  { id:0,  name:"娘",      w:2, h:2, x:1, y:0, wt:"hinoki", tc:"#3a2800" },
+  { id:1,  name:"父",      w:1, h:2, x:0, y:0, wt:"buna",   tc:"#180800" },
+  { id:2,  name:"母",      w:1, h:2, x:3, y:0, wt:"hinoki", tc:"#3a2800" },
+  { id:3,  name:"女中",    w:1, h:2, x:0, y:3, wt:"walnut", tc:"#f0d898" },
+  { id:4,  name:"女中",    w:1, h:2, x:3, y:3, wt:"walnut", tc:"#f0d898" },
+  { id:5,  name:"番頭",    w:2, h:1, x:2, y:2, wt:"keyaki", tc:"#2a2800" },
+  { id:6,  name:"丁稚",    w:1, h:1, x:1, y:3, wt:"hinoki2", tc:"#3a2800" },
+  { id:7,  name:"丁稚",    w:1, h:1, x:2, y:3, wt:"hinoki2", tc:"#3a2800" },
+  { id:8,  name:"手代",    w:1, h:1, x:1, y:4, wt:"hinoki3", tc:"#3a2000" },
+  { id:9,  name:"丁稚",    w:1, h:1, x:2, y:4, wt:"hinoki2", tc:"#3a2800" },
+  { id:10, name:"箱入り娘", w:2, h:1, x:0, y:2, wt:"hinoki", tc:"#3a2800", isStart:true },
+];
+
+// ── ゲームロジック ────────────────────────────────────────
+function buildGrid(pieces) {
+  const g = Array.from({length:FULL_ROWS}, () => Array(COLS).fill(-1));
+  for (const p of pieces)
+    for (let dy=0; dy<p.h; dy++)
+      for (let dx=0; dx<p.w; dx++) {
+        const r = p.y+dy;
+        if (r < FULL_ROWS) g[r][p.x+dx] = p.id;
+      }
+  return g;
+}
+
+function canPlace(pieces, id, nx, ny) {
+  const p = pieces.find(q => q.id===id);
+  if (nx<0 || ny<0 || nx+p.w>COLS || ny+p.h>FULL_ROWS) return false;
+  const g = buildGrid(pieces);
+  for (let dy=0; dy<p.h; dy++)
+    for (let dx=0; dx<p.w; dx++) {
+      const c = g[ny+dy][nx+dx];
+      if (c!==-1 && c!==id) return false;
+    }
+  return true;
+}
+
+function maxSteps(pieces, id, ddx, ddy) {
+  const p = pieces.find(q => q.id===id);
+  let s=0;
+  while (canPlace(pieces, id, p.x+ddx*(s+1), p.y+ddy*(s+1))) s++;
+  return s;
+}
+
+function isWon(pieces) {
+  const d = pieces.find(p => p.id===0);
+  return d && d.x===1 && d.y===3;
+}
+
+// ── 駒コンポーネント ─────────────────────────────────────
+function Piece({ p, sel, isDrag, vdx, vdy, onDown }) {
+  const pw = p.w * CELL - 8;
+  const ph = p.h * CELL - 8;
+  const pressed = isDrag;
+  const lift = pressed ? 0 : sel ? 5 : 3;
+  const depth = pressed ? 1 : DEPTH;
+  const sid = p.id * 37 + 5;
+
+  const ts = {
+    fontWeight:900, fontFamily:"'Noto Serif JP',serif",
+    color: p.tc, textShadow:"0 1px 1px rgba(255,255,255,0.3)",
+    pointerEvents:"none", textAlign:"center", lineHeight:1.3,
+  };
+
+  return (
+    <div
+      onMouseDown={e => onDown(e, p.id)}
+      onTouchStart={e => onDown(e, p.id)}
+      style={{
+        position:"absolute",
+        left: p.x*CELL + 4 + vdx,
+        top:  p.y*CELL + 4 + vdy - lift,
+        width: pw, height: ph,
+        zIndex: isDrag?30:sel?20:2,
+        cursor: p.isStart ? "pointer" : isDrag ? "grabbing" : "grab",
+        touchAction:"none",
+        transition: isDrag ? "none" : "left 0.1s ease, top 0.1s ease, transform 0.08s",
+        animation: p.isStart ? "pulse 1.8s ease-in-out infinite" : "none",
+        filter: p.isStart ? undefined
+          : pressed ? "none"
+          : sel ? "drop-shadow(2px 4px 6px rgba(0,0,0,0.55))"
+                : "drop-shadow(2px 3px 5px rgba(0,0,0,0.4))",
+      }}
+    >
+      {/* 右側面 */}
+      <div style={{position:"absolute", right:-depth, top:depth, width:depth, height:ph-depth,
+        background:"linear-gradient(90deg,rgba(70,50,30,0.7),rgba(35,20,8,0.85))",
+        borderRadius:"0 3px 3px 0", pointerEvents:"none"}}/>
+      {/* 下側面 */}
+      <div style={{position:"absolute", left:depth, bottom:-depth, width:pw-depth, height:depth,
+        background:"linear-gradient(180deg,rgba(55,38,18,0.75),rgba(28,16,5,0.88))",
+        borderRadius:"0 0 3px 3px", pointerEvents:"none"}}/>
+      {/* 上面 */}
+      <div style={{
+        position:"absolute", inset:0,
+        borderRadius: p.id===0 ? 8 : 5,
+        border: sel ? "2px solid rgba(255,245,180,0.9)" : "1px solid rgba(160,120,60,0.4)",
+        overflow:"hidden", pointerEvents:"none",
+        boxShadow: sel ? "inset 0 1px 4px rgba(255,245,180,0.4)" : "inset 0 -2px 4px rgba(0,0,0,0.15)",
+      }}>
+        <WoodSurface type={p.wt} w={pw} h={ph} sid={sid} radius={p.id===0?8:5}/>
+        {/* 左端ハイライト */}
+        <div style={{position:"absolute",top:"8%",left:3,bottom:"8%",width:3,
+          background:"linear-gradient(90deg,rgba(255,255,255,0.16),transparent)",
+          borderRadius:2, pointerEvents:"none"}}/>
+        {/* テキスト */}
+        <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",
+          justifyContent:"center",flexDirection:"column",pointerEvents:"none"}}>
+          {p.id===0 ? <>
+            <div style={{fontSize:24,lineHeight:1}}>👘</div>
+            <div style={{...ts, fontSize:13, letterSpacing:"0.15em", marginTop:2}}>娘</div>
+          </> : p.isStart ? <>
+            <div style={{fontSize:13, letterSpacing:"0.05em", fontFamily:"'Noto Serif JP', serif", fontWeight:900, color:p.tc, textShadow:"0 1px 1px rgba(255,255,255,0.3)", pointerEvents:"none"}}>箱入り娘</div>
+            <div style={{fontSize:12, opacity:0.65, marginTop:2, fontFamily:"'Noto Serif JP', serif", fontWeight:700, color:p.tc, pointerEvents:"none"}}>▶ タップして開始</div>
+          </> : p.h===2 ? <>
+            <div style={{fontSize:14,lineHeight:1}}>
+              {p.name==="父"?"👨":p.name==="母"?"👩":"👩‍💼"}
+            </div>
+            <div style={{...ts, fontSize:p.name==="女中"?10:11, letterSpacing:"0.08em", marginTop:2}}>{p.name}</div>
+          </> : <>
+            <div style={{...ts, fontSize:10, letterSpacing:"0.05em"}}>{p.name}</div>
+          </>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── メインアプリ ─────────────────────────────────────────
+function App() {
+  const [pieces,   setPieces]   = useState(() => START_PIECES.map(p => ({...p})));
+  const [selected, setSelected] = useState(null);
+  const [moves,    setMoves]    = useState(0);
+  const [history,  setHistory]  = useState([]);
+  const [won,      setWon]      = useState(false);
+  const [drag,     setDrag]     = useState(null);
+  const [started,  setStarted]  = useState(false);
+  const [soundOn,  setSoundOn]  = useState(true);
+
+  const dragRef    = useRef(null);   dragRef.current    = drag;
+  const piecesRef  = useRef(pieces); piecesRef.current  = pieces;
+  const soundOnRef = useRef(true);
+  useEffect(() => { soundOnRef.current = soundOn; }, [soundOn]);
+
+  // ── 効果音 ───────────────────────────────────────────
+  const actxRef = useRef(null);
+  function getACtx() {
+    if (!actxRef.current)
+      actxRef.current = new (window.AudioContext||window.webkitAudioContext)();
+    if (actxRef.current.state==='suspended') actxRef.current.resume();
+    return actxRef.current;
+  }
+
+  function playKoton(big) {
+    if (!soundOnRef.current) return;
+    try {
+      const ctx=getACtx(), now=ctx.currentTime;
+      const len=ctx.sampleRate*0.04;
+      const buf=ctx.createBuffer(1,len,ctx.sampleRate);
+      const d=buf.getChannelData(0);
+      for(let i=0;i<len;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2);
+      const src=ctx.createBufferSource(); src.buffer=buf;
+      const bp=ctx.createBiquadFilter(); bp.type='bandpass';
+      bp.frequency.value=big?800:1300; bp.Q.value=3;
+      const g=ctx.createGain();
+      g.gain.setValueAtTime(0,now);
+      g.gain.linearRampToValueAtTime(big?0.45:0.3,now+0.003);
+      g.gain.exponentialRampToValueAtTime(0.001,now+0.09);
+      src.connect(bp); bp.connect(g); g.connect(ctx.destination);
+      src.start(now); src.stop(now+0.12);
+      const osc=ctx.createOscillator(); osc.type='sine';
+      osc.frequency.setValueAtTime(big?270:360,now);
+      osc.frequency.exponentialRampToValueAtTime(big?110:150,now+0.07);
+      const go=ctx.createGain();
+      go.gain.setValueAtTime(big?0.28:0.18,now);
+      go.gain.exponentialRampToValueAtTime(0.001,now+0.09);
+      osc.connect(go); go.connect(ctx.destination);
+      osc.start(now); osc.stop(now+0.12);
+    } catch(e) {}
+  }
+
+  function playStart() {
+    if (!soundOnRef.current) return;
+    try {
+      const ctx = getACtx();
+      const now = ctx.currentTime + 0.005;
+      const notes = [1047,1319,1568,2093,2637,3136,4186];
+      notes.forEach((freq, i) => {
+        const t = now + i * 0.055;
+        const osc = ctx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, t);
+        osc.frequency.linearRampToValueAtTime(freq * 1.03, t + 0.12);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0, t);
+        g.gain.linearRampToValueAtTime(0.22, t + 0.01);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+        const lfo = ctx.createOscillator();
+        lfo.frequency.value = 18;
+        const lfoGain = ctx.createGain();
+        lfoGain.gain.value = 0.04;
+        lfo.connect(lfoGain); lfoGain.connect(g.gain);
+        lfo.start(t); lfo.stop(t + 0.2);
+        osc.connect(g); g.connect(ctx.destination);
+        osc.start(t); osc.stop(t + 0.2);
+      });
+      const finale = now + notes.length * 0.055 + 0.05;
+      [4186, 5274].forEach((freq, i) => {
+        const t = finale + i * 0.04;
+        const osc = ctx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.28, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+        osc.connect(g); g.connect(ctx.destination);
+        osc.start(t); osc.stop(t + 0.6);
+      });
+    } catch(e) {}
+  }
+
+  function playWin() {
+    if (!soundOnRef.current) return;
+    try {
+      const ctx = getACtx();
+
+      // ① キラキラ上昇グリッサンド
+      const baseNow = ctx.currentTime;
+      const sparkNotes = [523,659,784,1047,1319,1568,2093,2637,4186];
+      sparkNotes.forEach((freq, i) => {
+        const now = baseNow + i * 0.045;
+        const osc = ctx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, now);
+        osc.frequency.linearRampToValueAtTime(freq * 1.04, now + 0.15);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0, now);
+        g.gain.linearRampToValueAtTime(0.2, now + 0.01);
+        g.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
+        osc.connect(g); g.connect(ctx.destination);
+        osc.start(now); osc.stop(now + 0.25);
+      });
+
+      // ② ファンファーレ和音
+      const fanfareT = baseNow + sparkNotes.length * 0.045 + 0.1;
+      [[523,659,784],[659,784,1047],[784,1047,1319]].forEach((chord, ci) => {
+        chord.forEach(freq => {
+          const now = fanfareT + ci * 0.18;
+          const osc = ctx.createOscillator();
+          osc.type = 'triangle';
+          osc.frequency.value = freq;
+          const g = ctx.createGain();
+          g.gain.setValueAtTime(0.15, now);
+          g.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+          osc.connect(g); g.connect(ctx.destination);
+          osc.start(now); osc.stop(now + 0.4);
+        });
+      });
+
+      // ③ 拍手（ホワイトノイズのバースト×複数回）
+      const clapStart = fanfareT + 0.6;
+      const clapTimes = [0, 0.22, 0.44, 0.66, 0.82, 0.98, 1.1, 1.22, 1.32, 1.40, 1.47, 1.53];
+      clapTimes.forEach(t => {
+        const now = clapStart + t;
+        const bufLen = Math.floor(ctx.sampleRate * 0.06);
+        const buf = ctx.createBuffer(1, bufLen, ctx.sampleRate);
+        const data = buf.getChannelData(0);
+        for (let i=0; i<bufLen; i++)
+          data[i] = (Math.random()*2-1) * Math.pow(1 - i/bufLen, 1.5);
+        const src = ctx.createBufferSource(); src.buffer = buf;
+        // 拍手らしい帯域（中高域）
+        const hp = ctx.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=800;
+        const lp = ctx.createBiquadFilter(); lp.type='lowpass';  lp.frequency.value=6000;
+        const g = ctx.createGain();
+        // 徐々に盛り上がって少し引く
+        const vol = t < 0.7 ? 0.08 + t*0.2 : 0.22 - (t-0.7)*0.15;
+        g.gain.setValueAtTime(Math.max(0.05, vol), now);
+        g.gain.exponentialRampToValueAtTime(0.001, now+0.08);
+        src.connect(hp); hp.connect(lp); lp.connect(g); g.connect(ctx.destination);
+        src.start(now); src.stop(now+0.1);
+      });
+
+      // ④ 最後にキラーン
+      const finalT = clapStart + 1.6;
+      [2093, 2637, 4186].forEach((freq, i) => {
+        const now = finalT + i * 0.06;
+        const osc = ctx.createOscillator(); osc.type='sine';
+        osc.frequency.setValueAtTime(freq, now);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.3, now);
+        g.gain.exponentialRampToValueAtTime(0.001, now + 0.8);
+        osc.connect(g); g.connect(ctx.destination);
+        osc.start(now); osc.stop(now+0.9);
+      });
+
+    } catch(e) {}
+  }
+
+  // ── ゲーム操作 ───────────────────────────────────────
+  function applyMove(ps, id, nx, ny) {
+    const next = ps.map(p => p.id===id ? {...p, x:nx, y:ny} : p);
+    playKoton(id===0);
+    setPieces(next);
+    setHistory(h => [...h, ps]);
+    setMoves(m => m+1);
+    setSelected(null);
+    if (isWon(next)) { setWon(true); setTimeout(playWin, 150); }
+  }
+
+  async function handleStartPiece() {
+    // AudioContextをタッチイベント内で起動してから音を鳴らす
+    const ctx = getACtx();
+    if (ctx.state === 'suspended') await ctx.resume();
+    playStart();
+    setPieces(prev => prev.filter(p => !p.isStart));
+    setStarted(true);
+    setMoves(0);
+    setHistory([]);
+  }
+
+  function onDown(e, id) {
+    e.preventDefault(); e.stopPropagation();
+    const p = piecesRef.current.find(q => q.id===id);
+    if (!p) return;
+    if (p.isStart) { handleStartPiece(); return; }
+    if (!started || won) return;
+    const cx = e.touches ? e.touches[0].clientX : e.clientX;
+    const cy = e.touches ? e.touches[0].clientY : e.clientY;
+    setDrag({ id, axis:null, startX:cx, startY:cy, maxPos:0, maxNeg:0, visual:0, moved:false });
+    setSelected(id);
+  }
+
+  // グローバルポインターイベント
+  useEffect(() => {
+    const T = 6;
+    function onMove(e) {
+      const d = dragRef.current; if (!d) return;
+      e.preventDefault();
+      const cx = e.touches ? e.touches[0].clientX : e.clientX;
+      const cy = e.touches ? e.touches[0].clientY : e.clientY;
+      const rdx = cx-d.startX, rdy = cy-d.startY;
+      let {axis, maxPos, maxNeg} = d;
+      if (!axis) {
+        if (Math.abs(rdx)<T && Math.abs(rdy)<T) {
+          setDrag(v => v ? {...v, visual:0, moved:false} : null); return;
+        }
+        axis = Math.abs(rdx)>=Math.abs(rdy) ? 'x' : 'y';
+        const ps = piecesRef.current;
+        maxPos = (axis==='x' ? maxSteps(ps,d.id,1,0) : maxSteps(ps,d.id,0,1)) * CELL;
+        maxNeg = (axis==='x' ? maxSteps(ps,d.id,-1,0) : maxSteps(ps,d.id,0,-1)) * CELL;
+      }
+      const raw = axis==='x' ? rdx : rdy;
+      const cl  = Math.max(-maxNeg, Math.min(maxPos, raw));
+      setDrag(v => v ? {...v, axis, maxPos, maxNeg, visual:cl, moved:Math.abs(raw)>T} : null);
+    }
+    function onUp() {
+      const d = dragRef.current; if (!d) return;
+      if (d.moved && d.axis) {
+        const ps = piecesRef.current;
+        const p  = ps.find(q => q.id===d.id);
+        const steps = Math.round(d.visual/CELL);
+        if (steps!==0) {
+          const nx = p.x + (d.axis==='x' ? steps : 0);
+          const ny = p.y + (d.axis==='y' ? steps : 0);
+          if (canPlace(ps, d.id, nx, ny)) applyMove(ps, d.id, nx, ny);
+        }
+        setSelected(null);
+      }
+      setDrag(null);
+    }
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup',   onUp);
+    window.addEventListener('touchmove', onMove, {passive:false});
+    window.addEventListener('touchend',  onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup',   onUp);
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('touchend',  onUp);
+    };
+  }, []);
+
+  // キーボード
+  useEffect(() => {
+    function onKey(e) {
+      if (!selected) return;
+      const map = {ArrowUp:[0,-1], ArrowDown:[0,1], ArrowLeft:[-1,0], ArrowRight:[1,0]};
+      const d = map[e.key]; if (!d) return;
+      e.preventDefault();
+      const p = pieces.find(q => q.id===selected);
+      if (canPlace(pieces, selected, p.x+d[0], p.y+d[1]))
+        applyMove(pieces, selected, p.x+d[0], p.y+d[1]);
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selected, pieces]);
+
+  const [installPrompt, setInstallPrompt] = useState(null);
+  const [installed, setInstalled] = useState(false);
+
+  useEffect(() => {
+    function onPrompt(e) {
+      e.preventDefault();
+      setInstallPrompt(e);
+    }
+    function onInstalled() { setInstalled(true); setInstallPrompt(null); }
+    window.addEventListener('beforeinstallprompt', onPrompt);
+    window.addEventListener('appinstalled', onInstalled);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onPrompt);
+      window.removeEventListener('appinstalled', onInstalled);
+    };
+  }, []);
+
+  async function handleInstall() {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    const { outcome } = await installPrompt.userChoice;
+    if (outcome === 'accepted') setInstalled(true);
+    setInstallPrompt(null);
+  }
+
+  const undo = () => {
+    if (!history.length) return;
+    setPieces(history[history.length-1]);
+    setHistory(h => h.slice(0,-1));
+    setMoves(m => m-1);
+    setWon(false); setSelected(null);
+  };
+  const reset = () => {
+    setPieces(START_PIECES.map(p => ({...p})));
+    setMoves(0); setHistory([]); setWon(false);
+    setSelected(null); setStarted(false);
+  };
+
+  const bW=COLS*CELL, bH=FULL_ROWS*CELL, PAD=16, BOR=5, FD=10;
+
+  // ── レンダリング ─────────────────────────────────────
+  return (
+    <div style={{minHeight:"100vh", background:"#7a5a28",
+      display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
+      fontFamily:"'Noto Serif JP',serif", padding:20,
+      touchAction:"none", userSelect:"none"}}>
+      <style>{""}</style>
+
+      {/* タイトル */}
+      <div style={{textAlign:"center", marginBottom:16}}>
+        <h1 style={{color:"#f0dea0", fontSize:30, fontWeight:900,
+          letterSpacing:"0.25em", margin:0,
+          textShadow:"0 2px 8px rgba(0,0,0,0.6)"}}>箱入り娘</h1>
+        <div style={{color:"#c8a060", fontSize:10, marginTop:3, letterSpacing:"0.25em"}}>HAKOIRI MUSUME</div>
+      </div>
+
+      {/* 手数 */}
+      {started && (
+        <div style={{background:"rgba(240,200,80,0.1)", border:"1px solid rgba(240,200,80,0.3)",
+          borderRadius:8, padding:"6px 24px", marginBottom:16,
+          display:"flex", alignItems:"baseline", gap:6}}>
+          <span style={{color:"#f0dea0", fontSize:26, fontWeight:700}}>{moves}</span>
+          <span style={{color:"#a08040", fontSize:12, letterSpacing:"0.1em"}}>手</span>
+        </div>
+      )}
+
+      {/* 木箱 */}
+      <div style={{position:"relative"}}>
+        {/* 右側面・下側面（立体感） */}
+        <div style={{position:"absolute", top:FD, right:-FD,
+          width:FD, height:`calc(100% - ${FD}px)`,
+          background:"linear-gradient(90deg,#a07840,#785820)",
+          borderRadius:"0 4px 4px 0", zIndex:0,
+          boxShadow:"2px 2px 6px rgba(0,0,0,0.4)"}}/>
+        <div style={{position:"absolute", bottom:-FD, left:FD,
+          width:`calc(100% - ${FD}px)`, height:FD,
+          background:"linear-gradient(180deg,#a07840,#785820)",
+          borderRadius:"0 0 4px 4px", zIndex:0,
+          boxShadow:"2px 2px 6px rgba(0,0,0,0.4)"}}/>
+
+        {/* 枠メイン */}
+        <div style={{position:"relative", zIndex:1,
+          borderRadius:"12px 12px 0 0",
+          padding:`${PAD}px ${PAD}px 0 ${PAD}px`,
+          border:`${BOR}px solid #c8a860`, borderBottom:"none",
+          overflow:"hidden",
+          boxShadow:"4px 0 8px rgba(0,0,0,0.2)"}}>
+          {/* 枠の木目 */}
+          <WoodSurface type="frame" w={bW+PAD*2} h={bH+PAD} sid={1}
+            style={{zIndex:0, borderRadius:"10px 10px 0 0"}}/>
+
+          {/* ボード */}
+          <div style={{width:bW, height:bH, position:"relative",
+            borderRadius:"3px 3px 0 0",
+            boxShadow:"inset 0 4px 14px rgba(0,0,0,0.4)",
+            touchAction:"none", overflow:"visible", zIndex:1}}>
+            {/* ボードの木目背景 */}
+            <WoodSurface type="hinoki" w={bW} h={bH} sid={9} radius={3}
+              style={{opacity:0.82, zIndex:0}}/>
+            {/* 暗めオーバーレイ */}
+            <div style={{position:"absolute", inset:0, borderRadius:"3px 3px 0 0",
+              background:"rgba(70,44,8,0.18)", pointerEvents:"none", zIndex:1}}/>
+
+            {/* グリッド線 */}
+            {Array.from({length:FULL_ROWS-1}).map((_,i)=>(
+              <div key={"h"+i} style={{position:"absolute",left:2,right:2,
+                top:(i+1)*CELL,height:1,
+                background:"rgba(60,30,5,0.22)",pointerEvents:"none",zIndex:2}}/>
+            ))}
+            {Array.from({length:COLS-1}).map((_,i)=>(
+              <div key={"v"+i} style={{position:"absolute",top:2,bottom:2,
+                left:(i+1)*CELL,width:1,
+                background:"rgba(60,30,5,0.22)",pointerEvents:"none",zIndex:2}}/>
+            ))}
+
+            {/* 駒 */}
+            {pieces.map(p => {
+              const sel   = selected===p.id;
+              const isDrg = drag?.id===p.id;
+              const vdx   = isDrg && drag.axis==='x' ? drag.visual : 0;
+              const vdy   = isDrg && drag.axis==='y' ? drag.visual : 0;
+              return <Piece key={p.id} p={p} sel={sel} isDrag={isDrg}
+                vdx={vdx} vdy={vdy} onDown={onDown}/>;
+            })}
+
+            {/* クリア画面 */}
+            {won && (
+              <div style={{position:"absolute",inset:0,
+                background:"rgba(48,24,4,0.9)",
+                display:"flex",flexDirection:"column",
+                alignItems:"center",justifyContent:"center",
+                zIndex:100,borderRadius:"3px 3px 0 0",
+                animation:"fadeIn 0.3s ease"}}>
+                <div style={{fontSize:50}}>🎉</div>
+                <div style={{color:"#f0dea0",fontSize:22,fontWeight:900,
+                  letterSpacing:"0.2em",marginTop:10}}>脱出成功！</div>
+                <div style={{color:"#c8a060",fontSize:14,marginTop:5}}>{moves} 手で達成</div>
+                <button onClick={reset} style={{marginTop:18,padding:"10px 26px",
+                  background:"rgba(235,215,155,0.92)",border:"2px solid #c8a040",
+                  color:"#3a2400",fontSize:13,fontFamily:"inherit",
+                  borderRadius:8,cursor:"pointer",letterSpacing:"0.1em",fontWeight:700}}>
+                  もう一度
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* 最下段（半マス行）：壁＋玄関＋壁 */}
+        <div style={{display:"flex",position:"relative",zIndex:1}}>
+          {/* 左壁 */}
+          <div style={{width:PAD+CELL, height:HALF,
+            borderLeft:`${BOR}px solid #c8a860`,
+            borderBottom:`${BOR}px solid #c8a860`,
+            borderRadius:"0 0 0 12px", overflow:"hidden", position:"relative"}}>
+            <WoodSurface type="frame" w={PAD+CELL} h={HALF} sid={2}/>
+          </div>
+          {/* 玄関 */}
+          <div style={{width:2*CELL, height:HALF,
+            background:"linear-gradient(180deg,#b89848,#907030)",
+            borderBottom:`${BOR}px solid #c8a860`,
+            display:"flex",alignItems:"center",justifyContent:"center",
+            boxShadow:"inset 0 3px 8px rgba(0,0,0,0.3)",position:"relative"}}>
+            <div style={{position:"absolute",top:0,left:0,right:0,height:5,
+              background:"linear-gradient(180deg,rgba(0,0,0,0.2),transparent)"}}/>
+            <span style={{fontSize:13,color:"#3a2800",fontWeight:900,
+              letterSpacing:"0.25em",textShadow:"0 1px 2px rgba(255,240,160,0.4)"}}>玄 関</span>
+          </div>
+          {/* 右壁 */}
+          <div style={{width:CELL+PAD, height:HALF,
+            borderRight:`${BOR}px solid #c8a860`,
+            borderBottom:`${BOR}px solid #c8a860`,
+            borderRadius:"0 0 12px 0", overflow:"hidden", position:"relative"}}>
+            <WoodSurface type="frame" w={CELL+PAD} h={HALF} sid={3}/>
+          </div>
+        </div>
+      </div>
+
+      {/* ボタン */}
+      <div style={{display:"flex", gap:10, marginTop:22, flexWrap:"wrap", justifyContent:"center"}}>
+        {[
+          {label:"↩ 元に戻す", fn:undo,  off:!started||history.length===0},
+          {label:"↺ リセット",  fn:reset, off:false},
+        ].map(b => (
+          <button key={b.label} onClick={b.fn} disabled={b.off} style={{
+            background: b.off ? "rgba(255,255,255,0.05)" : "rgba(232,212,148,0.9)",
+            border: `2px solid ${b.off ? "rgba(255,255,255,0.1)" : "#c8a040"}`,
+            color: b.off ? "#7a6030" : "#3a2400",
+            padding:"10px 18px", borderRadius:8,
+            cursor: b.off ? "not-allowed" : "pointer",
+            fontSize:13, fontFamily:"inherit", letterSpacing:"0.08em", fontWeight:700,
+            boxShadow: b.off ? "none" : "0 3px 6px rgba(0,0,0,0.35)",
+          }}>{b.label}</button>
+        ))}
+        {/* 音ボタン */}
+        <button onClick={() => setSoundOn(s=>!s)}
+          title={soundOn?"音をオフ":"音をオン"}
+          style={{
+            background: soundOn ? "rgba(232,212,148,0.9)" : "rgba(255,255,255,0.05)",
+            border: `2px solid ${soundOn ? "#c8a040" : "rgba(255,255,255,0.1)"}`,
+            color: soundOn ? "#3a2400" : "#7a6030",
+            padding:"10px 14px", borderRadius:8, cursor:"pointer",
+            fontSize:18, boxShadow: soundOn ? "0 3px 6px rgba(0,0,0,0.35)" : "none",
+          }}>{soundOn?"🔊":"🔇"}</button>
+        {/* インストールボタン（インストール可能な時だけ表示） */}
+        {installPrompt && !installed && (
+          <button onClick={handleInstall} style={{
+            background:"rgba(232,212,148,0.9)",
+            border:"2px solid #c8a040",
+            color:"#3a2400",
+            padding:"10px 18px", borderRadius:8, cursor:"pointer",
+            fontSize:13, fontFamily:"inherit", letterSpacing:"0.08em", fontWeight:700,
+            boxShadow:"0 3px 6px rgba(0,0,0,0.35)",
+          }}>📲 インストール</button>
+        )}
+      </div>
+
+      <div style={{marginTop:16, color:"#a07848", fontSize:11, textAlign:"center", lineHeight:2}}>
+        <div>駒をドラッグしてスライド　または矢印キー</div>
+        <div style={{color:"#c8a06055"}}>目標：👘 娘を玄関から脱出させよう</div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+<script>
+if ('serviceWorker' in navigator)
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
+</script>
+</body>
+</html>
